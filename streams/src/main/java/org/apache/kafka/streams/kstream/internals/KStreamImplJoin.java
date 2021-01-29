@@ -36,6 +36,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 class KStreamImplJoin {
@@ -92,7 +93,7 @@ class KStreamImplJoin {
 
         if (thisStoreSupplier == null) {
             final String thisJoinStoreName = userProvidedBaseStoreName == null ? joinThisGeneratedName : userProvidedBaseStoreName + joinThisSuffix;
-            thisWindowStore = joinWindowStoreBuilder(thisJoinStoreName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.valueSerde(), streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig());
+            thisWindowStore = joinWindowStoreBuilder(thisJoinStoreName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.valueSerde(), streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), true);
         } else {
             assertWindowSettings(thisStoreSupplier, windows);
             thisWindowStore = joinWindowStoreBuilderFromSupplier(thisStoreSupplier, streamJoinedInternal.keySerde(), streamJoinedInternal.valueSerde());
@@ -100,7 +101,7 @@ class KStreamImplJoin {
 
         if (otherStoreSupplier == null) {
             final String otherJoinStoreName = userProvidedBaseStoreName == null ? joinOtherGeneratedName : userProvidedBaseStoreName + joinOtherSuffix;
-            otherWindowStore = joinWindowStoreBuilder(otherJoinStoreName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.otherValueSerde(), streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig());
+            otherWindowStore = joinWindowStoreBuilder(otherJoinStoreName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.otherValueSerde(), streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), true);
         } else {
             assertWindowSettings(otherStoreSupplier, windows);
             otherWindowStore = joinWindowStoreBuilderFromSupplier(otherStoreSupplier, streamJoinedInternal.keySerde(), streamJoinedInternal.otherValueSerde());
@@ -118,12 +119,37 @@ class KStreamImplJoin {
         final ProcessorGraphNode<K1, V2> otherWindowedStreamsNode = new ProcessorGraphNode<>(otherWindowStreamProcessorName, otherWindowStreamProcessorParams);
         builder.addGraphNode(otherGraphNode, otherWindowedStreamsNode);
 
+        Optional<StoreBuilder<WindowStore<K1, V1>>> thisOuterWindowStore = Optional.empty();
+        if (leftOuter) {
+            // todo: should we accept a supplied outer null store name?
+            // In tests, the name is KSTREAM-WINDOWED-N. How can I make sure it has the suffix?
+            // Should we have a new constant in KStreamImpl?
+            final String thisOuterStoreGeneratedName = renamed.suffixWithOrElseGet(
+                "-left-outer", builder, KStreamImpl.WINDOWED_NAME);
+
+            // todo: should we accept a supplied outer null store?
+            thisOuterWindowStore = Optional.of(joinWindowStoreBuilder(thisOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.valueSerde(),
+                streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), false));
+        }
+
+        Optional<StoreBuilder<WindowStore<K1, V2>>> otherOuterWindowStore = Optional.empty();
+        if (rightOuter) {
+            final String otherOuterStoreGeneratedName = renamed.suffixWithOrElseGet(
+                "-right-outer", builder, KStreamImpl.WINDOWED_NAME);
+
+            // todo: should we accept a supplied outer null store?
+            otherOuterWindowStore = Optional.of(joinWindowStoreBuilder(otherOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.otherValueSerde(),
+                streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), false));
+        }
+
         final KStreamKStreamJoin<K1, R, V1, V2> joinThis = new KStreamKStreamJoin<>(
             otherWindowStore.name(),
             windows.beforeMs,
             windows.afterMs,
             joiner,
-            leftOuter
+            leftOuter,
+            thisOuterWindowStore.map(StoreBuilder::name),
+            otherOuterWindowStore.map(StoreBuilder::name)
         );
 
         final KStreamKStreamJoin<K1, R, V2, V1> joinOther = new KStreamKStreamJoin<>(
@@ -131,7 +157,9 @@ class KStreamImplJoin {
             windows.afterMs,
             windows.beforeMs,
             AbstractStream.reverseJoiner(joiner),
-            rightOuter
+            rightOuter,
+            otherOuterWindowStore.map(StoreBuilder::name),
+            thisOuterWindowStore.map(StoreBuilder::name)
         );
 
         final PassThrough<K1, R> joinMerge = new PassThrough<>();
@@ -151,6 +179,9 @@ class KStreamImplJoin {
                    .withOtherWindowedStreamProcessorParameters(otherWindowStreamProcessorParams)
                    .withValueJoiner(joiner)
                    .withNodeName(joinMergeName);
+
+        thisOuterWindowStore.ifPresent(joinBuilder::withThisOuterWindowStoreBuilder);
+        otherOuterWindowStore.ifPresent(joinBuilder::withOtherOuterWindowStoreBuilder);
 
         final GraphNode joinGraphNode = joinBuilder.build();
 
@@ -191,13 +222,14 @@ class KStreamImplJoin {
                                                                                  final Serde<K> keySerde,
                                                                                  final Serde<V> valueSerde,
                                                                                  final boolean loggingEnabled,
-                                                                                 final Map<String, String> logConfig) {
+                                                                                 final Map<String, String> logConfig,
+                                                                                 final boolean retainDuplicates) {
         final StoreBuilder<WindowStore<K, V>> builder = Stores.windowStoreBuilder(
             Stores.persistentWindowStore(
                 storeName + "-store",
                 Duration.ofMillis(windows.size() + windows.gracePeriodMs()),
                 Duration.ofMillis(windows.size()),
-                true
+                retainDuplicates
             ),
             keySerde,
             valueSerde
