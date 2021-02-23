@@ -27,19 +27,22 @@ public class RocksDbWindowBytesStoreSupplier implements WindowBytesStoreSupplier
     private final long windowSize;
     private final boolean retainDuplicates;
     private final boolean returnTimestampedStore;
+    private final boolean returnTimestampedKeyOrderedStore;
 
     public RocksDbWindowBytesStoreSupplier(final String name,
                                            final long retentionPeriod,
                                            final long segmentInterval,
                                            final long windowSize,
                                            final boolean retainDuplicates,
-                                           final boolean returnTimestampedStore) {
+                                           final boolean returnTimestampedStore,
+                                           final boolean returnTimestampedKeyOrderedStore) {
         this.name = name;
         this.retentionPeriod = retentionPeriod;
         this.segmentInterval = segmentInterval;
         this.windowSize = windowSize;
         this.retainDuplicates = retainDuplicates;
         this.returnTimestampedStore = returnTimestampedStore;
+        this.returnTimestampedKeyOrderedStore = returnTimestampedKeyOrderedStore;
     }
 
     @Override
@@ -49,7 +52,19 @@ public class RocksDbWindowBytesStoreSupplier implements WindowBytesStoreSupplier
 
     @Override
     public WindowStore<Bytes, byte[]> get() {
-        if (!returnTimestampedStore) {
+        if (returnTimestampedKeyOrderedStore) {
+            return new RocksDBTimestampedOrderedWindowStore(
+                new RocksDBTimestampedOrderedSegmentedBytesStore(
+                    name,
+                    metricsScope(),
+                    retentionPeriod,
+                    segmentInterval,
+                    new TimestampedOrderedKeySchema()
+                ),
+                retainDuplicates,
+                windowSize
+            );
+        } else if (!returnTimestampedStore) {
             return new RocksDBWindowStore(
                 new RocksDBSegmentedBytesStore(
                     name,

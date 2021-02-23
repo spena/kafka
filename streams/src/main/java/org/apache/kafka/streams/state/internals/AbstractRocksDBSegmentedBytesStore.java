@@ -42,7 +42,7 @@ public class AbstractRocksDBSegmentedBytesStore<S extends Segment> implements Se
     private static final Logger LOG = LoggerFactory.getLogger(AbstractRocksDBSegmentedBytesStore.class);
 
     private final String name;
-    private final AbstractSegments<S> segments;
+    protected final AbstractSegments<S> segments;
     private final String metricScope;
     private final KeySchema keySchema;
 

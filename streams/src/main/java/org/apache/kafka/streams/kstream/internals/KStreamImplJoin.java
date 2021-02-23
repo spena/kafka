@@ -27,6 +27,8 @@ import org.apache.kafka.streams.kstream.internals.graph.ProcessorGraphNode;
 import org.apache.kafka.streams.kstream.internals.graph.ProcessorParameters;
 import org.apache.kafka.streams.kstream.internals.graph.StreamStreamJoinNode;
 import org.apache.kafka.streams.kstream.internals.graph.GraphNode;
+import org.apache.kafka.streams.state.JoinSideAndKey;
+import org.apache.kafka.streams.state.JoinedValues;
 import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.streams.state.WindowBytesStoreSupplier;
@@ -38,6 +40,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 class KStreamImplJoin {
 
@@ -128,8 +131,9 @@ class KStreamImplJoin {
                 "-left-outer", builder, KStreamImpl.WINDOWED_NAME);
 
             // todo: should we accept a supplied outer null store?
-            thisOuterWindowStore = Optional.of(joinWindowStoreBuilder(thisOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.valueSerde(),
-                streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), false));
+            //thisOuterWindowStore = Optional.of(joinWindowStoreBuilder(thisOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.valueSerde(),
+            //    streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), false));
+            thisOuterWindowStore = Optional.of(joinTimestampedOrderedWindowStoreBuilder(thisOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.valueSerde()));
         }
 
         Optional<StoreBuilder<WindowStore<K1, V2>>> otherOuterWindowStore = Optional.empty();
@@ -138,9 +142,13 @@ class KStreamImplJoin {
                 "-right-outer", builder, KStreamImpl.WINDOWED_NAME);
 
             // todo: should we accept a supplied outer null store?
-            otherOuterWindowStore = Optional.of(joinWindowStoreBuilder(otherOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.otherValueSerde(),
-                streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), false));
+            //otherOuterWindowStore = Optional.of(joinWindowStoreBuilder(otherOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.otherValueSerde(),
+            //    streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), false));
+            otherOuterWindowStore = Optional.of(joinTimestampedOrderedWindowStoreBuilder(otherOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.otherValueSerde()));
         }
+
+        final AtomicLong thisOuterStartWindowTime = new AtomicLong(0);
+        final AtomicLong otherOuterStartWindowTime = new AtomicLong(0);
 
         final KStreamKStreamJoin<K1, R, V1, V2> joinThis = new KStreamKStreamJoin<>(
             otherWindowStore.name(),
@@ -149,7 +157,9 @@ class KStreamImplJoin {
             joiner,
             leftOuter,
             thisOuterWindowStore.map(StoreBuilder::name),
-            otherOuterWindowStore.map(StoreBuilder::name)
+            otherOuterWindowStore.map(StoreBuilder::name),
+            thisOuterStartWindowTime,
+            otherOuterStartWindowTime
         );
 
         final KStreamKStreamJoin<K1, R, V2, V1> joinOther = new KStreamKStreamJoin<>(
@@ -159,7 +169,9 @@ class KStreamImplJoin {
             AbstractStream.reverseJoiner(joiner),
             rightOuter,
             otherOuterWindowStore.map(StoreBuilder::name),
-            thisOuterWindowStore.map(StoreBuilder::name)
+            thisOuterWindowStore.map(StoreBuilder::name),
+            otherOuterStartWindowTime,
+            thisOuterStartWindowTime
         );
 
         final PassThrough<K1, R> joinMerge = new PassThrough<>();
@@ -215,6 +227,25 @@ class KStreamImplJoin {
             && supplier.name().equals(otherSupplier.name())) {
             throw new StreamsException("Both StoreSuppliers have the same name.  StoreSuppliers must provide unique names");
         }
+    }
+
+    private static <K, V> StoreBuilder<WindowStore<K, V>> joinTimestampedOrderedWindowStoreBuilder(final String storeName,
+                                                                                                   final JoinWindows windows,
+                                                                                                   final Serde<K> keySerde,
+                                                                                                   final Serde<V> valueSerde) {
+        final StoreBuilder<WindowStore<K, V>> builder = Stores.windowStoreBuilder(
+            Stores.persistentTimestampedOrderedWindowStore(
+                storeName + "-store",
+                Duration.ofMillis(windows.size() + windows.gracePeriodMs()),
+                Duration.ofMillis(windows.size()),
+                false
+            ),
+            keySerde,
+            valueSerde
+        );
+
+        return builder;
+
     }
 
     private static <K, V> StoreBuilder<WindowStore<K, V>> joinWindowStoreBuilder(final String storeName,

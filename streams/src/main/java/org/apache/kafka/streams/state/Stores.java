@@ -211,6 +211,7 @@ public final class Stores {
             windowSize,
             retainDuplicates,
             legacySegmentInterval,
+            false,
             false
         );
     }
@@ -238,7 +239,7 @@ public final class Stores {
                                                                  final Duration retentionPeriod,
                                                                  final Duration windowSize,
                                                                  final boolean retainDuplicates) throws IllegalArgumentException {
-        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, false);
+        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, false, false);
     }
 
     /**
@@ -265,14 +266,22 @@ public final class Stores {
                                                                             final Duration retentionPeriod,
                                                                             final Duration windowSize,
                                                                             final boolean retainDuplicates) throws IllegalArgumentException {
-        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, true);
+        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, true, false);
+    }
+
+    public static WindowBytesStoreSupplier persistentTimestampedOrderedWindowStore(final String name,
+                                                                                   final Duration retentionPeriod,
+                                                                                   final Duration windowSize,
+                                                                                   final boolean retainDuplicates) {
+        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, false, true);
     }
 
     private static WindowBytesStoreSupplier persistentWindowStore(final String name,
                                                                   final Duration retentionPeriod,
                                                                   final Duration windowSize,
                                                                   final boolean retainDuplicates,
-                                                                  final boolean timestampedStore) {
+                                                                  final boolean timestampedStore,
+                                                                  final boolean timestampedKeyOrderedStore) {
         Objects.requireNonNull(name, "name cannot be null");
         final String rpMsgPrefix = prepareMillisCheckFailMsgPrefix(retentionPeriod, "retentionPeriod");
         final long retentionMs = validateMillisecondDuration(retentionPeriod, rpMsgPrefix);
@@ -281,7 +290,7 @@ public final class Stores {
 
         final long defaultSegmentInterval = Math.max(retentionMs / 2, 60_000L);
 
-        return persistentWindowStore(name, retentionMs, windowSizeMs, retainDuplicates, defaultSegmentInterval, timestampedStore);
+        return persistentWindowStore(name, retentionMs, windowSizeMs, retainDuplicates, defaultSegmentInterval, timestampedStore, timestampedKeyOrderedStore);
     }
 
     private static WindowBytesStoreSupplier persistentWindowStore(final String name,
@@ -289,7 +298,8 @@ public final class Stores {
                                                                   final long windowSize,
                                                                   final boolean retainDuplicates,
                                                                   final long segmentInterval,
-                                                                  final boolean timestampedStore) {
+                                                                  final boolean timestampedStore,
+                                                                  final boolean timestampedKeyOrderedStore) {
         Objects.requireNonNull(name, "name cannot be null");
         if (retentionPeriod < 0L) {
             throw new IllegalArgumentException("retentionPeriod cannot be negative");
@@ -312,7 +322,8 @@ public final class Stores {
             segmentInterval,
             windowSize,
             retainDuplicates,
-            timestampedStore);
+            timestampedStore,
+            timestampedKeyOrderedStore);
     }
 
     /**

@@ -210,7 +210,7 @@
               files="Murmur3Test.java"/>
 
     <suppress checks="MethodLength"
-              files="KStreamSlidingWindowAggregateTest.java"/>
+              files="KStreamSlidingWindowAggregateTest.java|KStreamKStreamLeftJoinTest.java|KStreamKStreamOuterJoinTest.java"/>
 
     <suppress checks="ClassFanOutComplexity"
               files="StreamTaskTest.java"/>

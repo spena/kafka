@@ -72,7 +72,7 @@ public class RocksDBWindowStoreTest extends AbstractWindowBytesStoreTest {
 
     @Override
     String getMetricsScope() {
-        return new RocksDbWindowBytesStoreSupplier(null, 0, 0, 0, false, false).metricsScope();
+        return new RocksDbWindowBytesStoreSupplier(null, 0, 0, 0, false, false, false).metricsScope();
     }
 
     @Override

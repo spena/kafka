@@ -66,6 +66,10 @@ public interface WindowStore<K, V> extends StateStore, ReadOnlyWindowStore<K, V>
      */
     void put(K key, V value, long windowStartTimestamp);
 
+    default void deleteRange(long timeFrom, long timeTo) {
+        // no-op
+    }
+
     /**
      * Get all the key-value pairs with the given key and the time range from all the existing windows.
      * <p>

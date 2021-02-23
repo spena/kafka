@@ -27,13 +27,14 @@ import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.ProcessorSupplier;
 import org.apache.kafka.streams.processor.To;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
+import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.WindowStore;
 import org.apache.kafka.streams.state.WindowStoreIterator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.apache.kafka.streams.processor.internals.metrics.TaskMetrics.droppedRecordsSensorOrSkippedRecordsSensor;
 
@@ -48,6 +49,8 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
     private final boolean outer;
     private final Optional<String> thisOuterWindowName;
     private final Optional<String> otherOuterWindowName;
+    private final AtomicLong thisOuterStartWindowTime;
+    private final AtomicLong otherOuterStartWindowTime;
 
     KStreamKStreamJoin(final String otherWindowName,
                        final long joinBeforeMs,
@@ -55,7 +58,9 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
                        final ValueJoiner<? super V1, ? super V2, ? extends R> joiner,
                        final boolean outer,
                        final Optional<String> thisOuterWindowName,
-                       final Optional<String> otherOuterWindowName) {
+                       final Optional<String> otherOuterWindowName,
+                       final AtomicLong thisOuterStartWindowTime,
+                       final AtomicLong otherOuterStartWindowTime) {
         this.otherWindowName = otherWindowName;
         this.joinBeforeMs = joinBeforeMs;
         this.joinAfterMs = joinAfterMs;
@@ -63,6 +68,8 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
         this.outer = outer;
         this.thisOuterWindowName = thisOuterWindowName;
         this.otherOuterWindowName = otherOuterWindowName;
+        this.thisOuterStartWindowTime = thisOuterStartWindowTime;
+        this.otherOuterStartWindowTime = otherOuterStartWindowTime;
     }
 
     @Override
@@ -75,7 +82,7 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
         private WindowStore<K, V2> otherWindow;
         private StreamsMetricsImpl metrics;
         private Sensor droppedRecordsSensor;
-        private long observedStreamTime = ConsumerRecord.NO_TIMESTAMP;
+        private long maxObservedStreamTime = ConsumerRecord.NO_TIMESTAMP;
         private Optional<StreamStreamOuterJoinBuffer> thisOuterJoinBuffer = Optional.empty();
         private Optional<StreamStreamOuterJoinBuffer> otherOuterJoinBuffer = Optional.empty();
 
@@ -85,7 +92,7 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
             super.init(context);
             metrics = (StreamsMetricsImpl) context.metrics();
             droppedRecordsSensor = droppedRecordsSensorOrSkippedRecordsSensor(Thread.currentThread().getName(), context.taskId().toString(), metrics);
-            otherWindow = (WindowStore<K, V2>) context.getStateStore(otherWindowName);
+            otherWindow = context.getStateStore(otherWindowName);
 
             thisOuterWindowName.ifPresent(name -> {
                 thisOuterJoinBuffer = Optional.of(new StreamStreamOuterJoinBuffer(context.getStateStore(name)));
@@ -100,7 +107,7 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
         @SuppressWarnings("unchecked")
         @Override
         public void process(final K key, final V1 value) {
-            observedStreamTime = Math.max(observedStreamTime, context().timestamp());
+            maxObservedStreamTime = Math.max(maxObservedStreamTime, context().timestamp());
 
             // we do join iff keys are equal, thus, if key is null we cannot join and just ignore the record
             //
@@ -133,39 +140,68 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
                         To.all().withTimestamp(Math.max(inputRecordTimestamp, otherRecord.key)));
 
                     // remove the non-joined record
-                    otherOuterJoinBuffer.ifPresent(buffer -> buffer.delete(key, inputRecordTimestamp));
+                    if (timeTo >= maxObservedStreamTime) {
+                        otherOuterJoinBuffer.ifPresent(buffer -> {
+                            // this check increases performance around 20% (could it be using bloom filters to quickly check if it exists?)
+                            // could RocksDB::keyMayExist() be faster? This check is potentially lighter-weight than invoking DB::Get().
+                            if (buffer.fetch(key, otherRecord.key) != null) {
+                                buffer.put(key, null, otherRecord.key);
+                            }
+                        });
+                    }
                 }
 
                 if (needOuterJoin) {
-                    thisOuterJoinBuffer.get().put(key, value, inputRecordTimestamp);
+                    // if record is out-of-order, then process it without holding it temporary
+                    if (timeTo < maxObservedStreamTime) {
+                        context().forward(key, joiner.apply(value, null));
+                    } else {
+                        thisOuterJoinBuffer.get().put(key, value, inputRecordTimestamp);
+                    }
                 }
+            }
 
-                // it will also emit expiry records from the other window store if it uses
-                // a join (i.e. left join only)
+            // it will also emit expiry records from the other window store if it uses
+            // a join (i.e. left join only)
+            if (inputRecordTimestamp == maxObservedStreamTime) { // check if input record time move
                 maybeEmitOuterExpiryRecords();
             }
         }
 
         @SuppressWarnings("unchecked")
         private void maybeEmitOuterExpiryRecords() {
-            final long expiryTime = observedStreamTime - joinBeforeMs;
-            if (expiryTime <= 0) {
-                return;
+            final long expiredWindowTime = maxObservedStreamTime - joinBeforeMs;
+
+            // todo: add grace period to calculations
+
+            // condition to avoid processing records behind the window size
+            if (expiredWindowTime >= 0) {
+                if (expiredWindowTime > thisOuterStartWindowTime.get()) {
+                    thisOuterJoinBuffer.ifPresent(buffer -> {
+                        try (final KeyValueIterator<Windowed<K>, V1> it = buffer.fetchAll(thisOuterStartWindowTime.get(), expiredWindowTime)) {
+                            while (it.hasNext()) {
+                                final KeyValue<Windowed<K>, V1> e = it.next();
+                                context().forward(e.key.key(), joiner.apply(e.value, null));
+                            }
+                        }
+
+                        thisOuterStartWindowTime.set(expiredWindowTime + 1);
+                    });
+                }
+
+                if (expiredWindowTime > otherOuterStartWindowTime.get()) {
+                    otherOuterJoinBuffer.ifPresent(buffer -> {
+                        try (final KeyValueIterator<Windowed<K>, V2> it = buffer.fetchAll(otherOuterStartWindowTime.get(), expiredWindowTime)) {
+                            while (it.hasNext()) {
+                                final KeyValue<Windowed<K>, V2> e = it.next();
+                                context().forward(e.key.key(), joiner.apply(null, e.value));
+                            }
+                        }
+
+                        otherOuterStartWindowTime.set(expiredWindowTime + 1);
+                    });
+                }
             }
-
-            thisOuterJoinBuffer.ifPresent(buffer -> {
-                final Map<Windowed<K>, V1> result = buffer.deleteAll(expiryTime);
-                for (final Map.Entry<Windowed<K>, V1> e : result.entrySet()) {
-                    context().forward(e.getKey().key(), joiner.apply(e.getValue(), null));
-                }
-            });
-
-            otherOuterJoinBuffer.ifPresent(buffer -> {
-                final Map<Windowed<K>, V2> result = buffer.deleteAll(expiryTime);
-                for (final Map.Entry<Windowed<K>, V2> e : result.entrySet()) {
-                    context().forward(e.getKey().key(), joiner.apply(null, e.getValue()));
-                }
-            });
         }
     }
 }

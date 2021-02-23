@@ -22,9 +22,6 @@ import org.apache.kafka.streams.kstream.Windowed;
 import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.WindowStore;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-
 import static java.util.Objects.requireNonNull;
 
 public class StreamStreamOuterJoinBuffer<K, V> {
@@ -40,37 +37,23 @@ public class StreamStreamOuterJoinBuffer<K, V> {
 
     // untilTimestap is inclusive
     // todo: should return an iterator?
-    Map<Windowed<K>, V> delete(final K key, final long untilTimestamp) {
-        final Map<Windowed<K>, V> orderedHashMap = new LinkedHashMap<>();
-
+    void delete(final K key, final long from, final long to) {
         // todo: choose a better timeFrom? 0 because the other store min. is not known
         // todo: is this delete efficient?
-        try (final KeyValueIterator<Windowed<K>, V> it = windowStore.fetch(key, key, 0, untilTimestamp)) {
+        try (final KeyValueIterator<Windowed<K>, V> it = windowStore.fetch(key, key, from, to)) {
             while (it.hasNext()) {
                 final KeyValue<Windowed<K>, V> e = it.next();
                 windowStore.put(e.key.key(), null, e.key.window().start());
-                orderedHashMap.put(e.key, e.value);
             }
         }
-
-        return orderedHashMap;
     }
 
-    // untilTimestamp is inclusive
-    // todo: should return an iterator?
-    Map<Windowed<K>, V> deleteAll(final long untilTimestamp) {
-        final Map<Windowed<K>, V> orderedHashMap = new LinkedHashMap<>();
-
-        // todo: choose a better timeFrom? 0 because the other store min. is not known
-        // todo: is this delete efficient?
-        try (final KeyValueIterator<Windowed<K>, V> it = windowStore.fetchAll(0, untilTimestamp)) {
-            while (it.hasNext()) {
-                final KeyValue<Windowed<K>, V> e = it.next();
-                windowStore.put(e.key.key(), null, e.key.window().start());
-                orderedHashMap.put(e.key, e.value);
-            }
-        }
-
-        return orderedHashMap;
+    V fetch(final K key, final long time) {
+        return windowStore.fetch(key, time);
     }
+
+    KeyValueIterator<Windowed<K>, V> fetchAll(final long from, final long to) {
+        return windowStore.fetchAll(from, to);
+    }
+
 }

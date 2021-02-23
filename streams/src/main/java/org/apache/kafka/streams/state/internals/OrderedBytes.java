@@ -23,6 +23,7 @@ import java.nio.ByteBuffer;
 
 class OrderedBytes {
 
+    private static final int TIMESTAMP_SIZE = 8;
     private static final int MIN_KEY_LENGTH = 1;
     /**
      * Returns the upper byte range for a key with a given fixed size maximum suffix
@@ -60,6 +61,43 @@ class OrderedBytes {
         // KeySchema.toBinaryKey(keyFrom, from, 0) in byte order
         return Bytes.wrap(
             rangeStart
+                .put(bytes)
+                .put(minSuffix)
+                .array()
+        );
+    }
+
+    static Bytes upperRangeTimestamp(final long timestamp, final Bytes key, final byte[] maxSuffix) {
+        final byte[] bytes = key.get();
+        final ByteBuffer rangeEnd = ByteBuffer.allocate(TIMESTAMP_SIZE + bytes.length + maxSuffix.length);
+
+        rangeEnd.putLong(timestamp);
+
+        int i = 0;
+        while (i < bytes.length) { // why did I remove the 2nd condition?
+            rangeEnd.put(bytes[i++]);
+        }
+
+        rangeEnd.put(maxSuffix);
+        rangeEnd.flip();
+
+        final byte[] res = new byte[rangeEnd.remaining()];
+        ByteBuffer.wrap(res).put(rangeEnd);
+        return Bytes.wrap(res);
+    }
+
+    static Bytes lowerRangeTimestamp(final long timestamp, final Bytes key, final byte[] minSuffix) {
+        final byte[] bytes = key.get();
+        final ByteBuffer rangeStart = ByteBuffer.allocate(TIMESTAMP_SIZE + bytes.length + minSuffix.length);
+        // any key in the range would start at least with the given prefix to be
+        // in the range, and have at least SUFFIX_SIZE number of trailing zero bytes.
+
+        // unless there is a maximum key length, you can keep appending more zero bytes
+        // to keyFrom to create a key that will match the range, yet that would precede
+        // KeySchema.toBinaryKey(keyFrom, from, 0) in byte order
+        return Bytes.wrap(
+            rangeStart
+                .putLong(timestamp)
                 .put(bytes)
                 .put(minSuffix)
                 .array()
