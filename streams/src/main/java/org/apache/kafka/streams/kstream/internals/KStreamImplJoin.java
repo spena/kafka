@@ -17,6 +17,7 @@
 
 package org.apache.kafka.streams.kstream.internals;
 
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.kstream.JoinWindows;
@@ -33,6 +34,8 @@ import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.streams.state.WindowBytesStoreSupplier;
 import org.apache.kafka.streams.state.WindowStore;
+import org.apache.kafka.streams.state.internals.JoinSideAndKeySerde;
+import org.apache.kafka.streams.state.internals.JoinedValuesSerde;
 
 import java.time.Duration;
 import java.util.Arrays;
@@ -122,56 +125,44 @@ class KStreamImplJoin {
         final ProcessorGraphNode<K1, V2> otherWindowedStreamsNode = new ProcessorGraphNode<>(otherWindowStreamProcessorName, otherWindowStreamProcessorParams);
         builder.addGraphNode(otherGraphNode, otherWindowedStreamsNode);
 
-        Optional<StoreBuilder<WindowStore<K1, V1>>> thisOuterWindowStore = Optional.empty();
-        if (leftOuter) {
+        Optional<StoreBuilder<WindowStore<JoinSideAndKey<K1>, JoinedValues<V1, V2>>>> outerWindowStore = Optional.empty();
+        if (leftOuter || rightOuter) {
             // todo: should we accept a supplied outer null store name?
             // In tests, the name is KSTREAM-WINDOWED-N. How can I make sure it has the suffix?
             // Should we have a new constant in KStreamImpl?
-            final String thisOuterStoreGeneratedName = renamed.suffixWithOrElseGet(
-                "-left-outer", builder, KStreamImpl.WINDOWED_NAME);
-
-            // todo: should we accept a supplied outer null store?
-            //thisOuterWindowStore = Optional.of(joinWindowStoreBuilder(thisOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.valueSerde(),
-            //    streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), false));
-            thisOuterWindowStore = Optional.of(joinTimestampedOrderedWindowStoreBuilder(thisOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.valueSerde()));
+            final String outerStoreGeneratedName = renamed.suffixWithOrElseGet("-outer", builder, KStreamImpl.WINDOWED_NAME);
+            outerWindowStore = Optional.of(joinTimestampedOrderedWindowStoreBuilder(
+                outerStoreGeneratedName,
+                windows,
+                new JoinSideAndKeySerde<>(streamJoinedInternal.keySerde()),
+                new JoinedValuesSerde<>(streamJoinedInternal.valueSerde(), streamJoinedInternal.otherValueSerde())));
         }
 
-        Optional<StoreBuilder<WindowStore<K1, V2>>> otherOuterWindowStore = Optional.empty();
-        if (rightOuter) {
-            final String otherOuterStoreGeneratedName = renamed.suffixWithOrElseGet(
-                "-right-outer", builder, KStreamImpl.WINDOWED_NAME);
-
-            // todo: should we accept a supplied outer null store?
-            //otherOuterWindowStore = Optional.of(joinWindowStoreBuilder(otherOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.otherValueSerde(),
-            //    streamJoinedInternal.loggingEnabled(), streamJoinedInternal.logConfig(), false));
-            otherOuterWindowStore = Optional.of(joinTimestampedOrderedWindowStoreBuilder(otherOuterStoreGeneratedName, windows, streamJoinedInternal.keySerde(), streamJoinedInternal.otherValueSerde()));
-        }
-
-        final AtomicLong thisOuterStartWindowTime = new AtomicLong(0);
-        final AtomicLong otherOuterStartWindowTime = new AtomicLong(0);
+        final AtomicLong maxObservedTime = new AtomicLong(ConsumerRecord.NO_TIMESTAMP);
+        final AtomicLong outerStartWindowTime = new AtomicLong(0);
 
         final KStreamKStreamJoin<K1, R, V1, V2> joinThis = new KStreamKStreamJoin<>(
+            true,
             otherWindowStore.name(),
             windows.beforeMs,
             windows.afterMs,
             joiner,
             leftOuter,
-            thisOuterWindowStore.map(StoreBuilder::name),
-            otherOuterWindowStore.map(StoreBuilder::name),
-            thisOuterStartWindowTime,
-            otherOuterStartWindowTime
+            outerWindowStore.map(StoreBuilder::name),
+            outerStartWindowTime,
+            maxObservedTime
         );
 
         final KStreamKStreamJoin<K1, R, V2, V1> joinOther = new KStreamKStreamJoin<>(
+            false,
             thisWindowStore.name(),
             windows.afterMs,
             windows.beforeMs,
             AbstractStream.reverseJoiner(joiner),
             rightOuter,
-            otherOuterWindowStore.map(StoreBuilder::name),
-            thisOuterWindowStore.map(StoreBuilder::name),
-            otherOuterStartWindowTime,
-            thisOuterStartWindowTime
+            outerWindowStore.map(StoreBuilder::name),
+            outerStartWindowTime,
+            maxObservedTime
         );
 
         final PassThrough<K1, R> joinMerge = new PassThrough<>();
@@ -192,8 +183,7 @@ class KStreamImplJoin {
                    .withValueJoiner(joiner)
                    .withNodeName(joinMergeName);
 
-        thisOuterWindowStore.ifPresent(joinBuilder::withThisOuterWindowStoreBuilder);
-        otherOuterWindowStore.ifPresent(joinBuilder::withOtherOuterWindowStoreBuilder);
+        outerWindowStore.ifPresent(joinBuilder::withOuterWindowStoreBuilder);
 
         final GraphNode joinGraphNode = joinBuilder.build();
 

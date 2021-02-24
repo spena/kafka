@@ -14,32 +14,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package org.apache.kafka.streams.state.internals;
 
-package org.apache.kafka.streams.kstream.internals;
-
-import org.apache.kafka.streams.kstream.Windowed;
-import org.apache.kafka.streams.state.KeyValueIterator;
-import org.apache.kafka.streams.state.WindowStore;
+import org.apache.kafka.common.serialization.Serde;
+import org.apache.kafka.streams.kstream.internals.WrappingNullableSerde;
+import org.apache.kafka.streams.state.JoinSideAndKey;
 
 import static java.util.Objects.requireNonNull;
 
-public class StreamStreamOuterJoinBuffer<K, V> {
-    private final WindowStore<K, V> windowStore;
-
-    public StreamStreamOuterJoinBuffer(final WindowStore<K, V> windowStore) {
-        this.windowStore = requireNonNull(windowStore, "windowStore");
+public class JoinSideAndKeySerde<K> extends WrappingNullableSerde<JoinSideAndKey<K>, K, Void> {
+    public JoinSideAndKeySerde(final Serde<K> keySerde) {
+        super(
+            new JoinSideAndKeySerializer<>(requireNonNull(keySerde, "keySerde was null").serializer()),
+            new JoinSideAndKeyDeserializer<>(requireNonNull(keySerde, "keySerde was null").deserializer())
+        );
     }
-
-    void put(final K key, final V value, final long startTimestamp) {
-        windowStore.put(key, value, startTimestamp);
-    }
-
-    V fetch(final K key, final long time) {
-        return windowStore.fetch(key, time);
-    }
-
-    KeyValueIterator<Windowed<K>, V> fetchAll(final long from, final long to) {
-        return windowStore.fetchAll(from, to);
-    }
-
 }

@@ -150,8 +150,13 @@ public class KStreamKStreamOuterJoinTest {
 
             // push a dummy event that should expire non-joined items; it should not produce any items because
             // all of them are joined
-            inputTopic1.pipeInput(0, "dummy", 400);
-            processor.checkAndClearProcessResult();
+            //inputTopic1.pipeInput(0, "dummy", 400);
+            //processor.checkAndClearProcessResult();
+
+            // TEST
+            inputTopic1.pipeInput(0, "Z0", 172800000); // 48h time
+            inputTopic2.pipeInput(0, "z0", 500); // this is expired (late record)
+            processor.checkAndClearProcessResult(new KeyValueTimestamp<>(0, "null+z0", 500));
         }
     }
 

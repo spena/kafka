@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.streams.kstream.internals;
 
-import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.kstream.ValueJoiner;
@@ -27,6 +26,8 @@ import org.apache.kafka.streams.processor.ProcessorContext;
 import org.apache.kafka.streams.processor.ProcessorSupplier;
 import org.apache.kafka.streams.processor.To;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
+import org.apache.kafka.streams.state.JoinSideAndKey;
+import org.apache.kafka.streams.state.JoinedValues;
 import org.apache.kafka.streams.state.KeyValueIterator;
 import org.apache.kafka.streams.state.WindowStore;
 import org.apache.kafka.streams.state.WindowStoreIterator;
@@ -47,29 +48,29 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
 
     private final ValueJoiner<? super V1, ? super V2, ? extends R> joiner;
     private final boolean outer;
-    private final Optional<String> thisOuterWindowName;
-    private final Optional<String> otherOuterWindowName;
-    private final AtomicLong thisOuterStartWindowTime;
-    private final AtomicLong otherOuterStartWindowTime;
+    private final Optional<String> outerWindowName;
+    private final AtomicLong outerStartWindowTime;
+    private final AtomicLong maxObservedStreamTime;
+    private final boolean thisJoin;
 
-    KStreamKStreamJoin(final String otherWindowName,
+    KStreamKStreamJoin(final boolean thisJoin,
+                       final String otherWindowName,
                        final long joinBeforeMs,
                        final long joinAfterMs,
                        final ValueJoiner<? super V1, ? super V2, ? extends R> joiner,
                        final boolean outer,
-                       final Optional<String> thisOuterWindowName,
-                       final Optional<String> otherOuterWindowName,
-                       final AtomicLong thisOuterStartWindowTime,
-                       final AtomicLong otherOuterStartWindowTime) {
+                       final Optional<String> outerWindowName,
+                       final AtomicLong outerStartWindowTime,
+                       final AtomicLong maxObservedStreamTime) {
+        this.thisJoin = thisJoin;
         this.otherWindowName = otherWindowName;
         this.joinBeforeMs = joinBeforeMs;
         this.joinAfterMs = joinAfterMs;
         this.joiner = joiner;
         this.outer = outer;
-        this.thisOuterWindowName = thisOuterWindowName;
-        this.otherOuterWindowName = otherOuterWindowName;
-        this.thisOuterStartWindowTime = thisOuterStartWindowTime;
-        this.otherOuterStartWindowTime = otherOuterStartWindowTime;
+        this.outerWindowName = outerWindowName;
+        this.outerStartWindowTime = outerStartWindowTime;
+        this.maxObservedStreamTime = maxObservedStreamTime;
     }
 
     @Override
@@ -82,9 +83,7 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
         private WindowStore<K, V2> otherWindow;
         private StreamsMetricsImpl metrics;
         private Sensor droppedRecordsSensor;
-        private long maxObservedStreamTime = ConsumerRecord.NO_TIMESTAMP;
-        private Optional<StreamStreamOuterJoinBuffer> thisOuterJoinBuffer = Optional.empty();
-        private Optional<StreamStreamOuterJoinBuffer> otherOuterJoinBuffer = Optional.empty();
+        private Optional<WindowStore<JoinSideAndKey<K>, JoinedValues>> outerWindowStore = Optional.empty();
 
         @SuppressWarnings("unchecked")
         @Override
@@ -94,12 +93,8 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
             droppedRecordsSensor = droppedRecordsSensorOrSkippedRecordsSensor(Thread.currentThread().getName(), context.taskId().toString(), metrics);
             otherWindow = context.getStateStore(otherWindowName);
 
-            thisOuterWindowName.ifPresent(name -> {
-                thisOuterJoinBuffer = Optional.of(new StreamStreamOuterJoinBuffer(context.getStateStore(name)));
-            });
-
-            otherOuterWindowName.ifPresent(name -> {
-                otherOuterJoinBuffer = Optional.of(new StreamStreamOuterJoinBuffer(context.getStateStore(name)));
+            outerWindowName.ifPresent(name -> {
+                outerWindowStore = Optional.of(context.getStateStore(name));
             });
         }
 
@@ -107,7 +102,7 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
         @SuppressWarnings("unchecked")
         @Override
         public void process(final K key, final V1 value) {
-            maxObservedStreamTime = Math.max(maxObservedStreamTime, context().timestamp());
+            maxObservedStreamTime.set(Math.max(maxObservedStreamTime.get(), context().timestamp()));
 
             // we do join iff keys are equal, thus, if key is null we cannot join and just ignore the record
             //
@@ -140,12 +135,12 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
                         To.all().withTimestamp(Math.max(inputRecordTimestamp, otherRecord.key)));
 
                     // remove the non-joined record
-                    if (timeTo >= maxObservedStreamTime) {
-                        otherOuterJoinBuffer.ifPresent(buffer -> {
+                    if (timeTo >= maxObservedStreamTime.get()) {
+                        outerWindowStore.ifPresent(buffer -> {
                             // this check increases performance around 20% (could it be using bloom filters to quickly check if it exists?)
                             // could RocksDB::keyMayExist() be faster? This check is potentially lighter-weight than invoking DB::Get().
-                            if (buffer.fetch(key, otherRecord.key) != null) {
-                                buffer.put(key, null, otherRecord.key);
+                            if (buffer.fetch(JoinSideAndKey.make(!thisJoin, key), otherRecord.key) != null) {
+                                buffer.put(JoinSideAndKey.make(!thisJoin, key), null, otherRecord.key);
                             }
                         });
                     }
@@ -153,52 +148,59 @@ class KStreamKStreamJoin<K, R, V1, V2> implements ProcessorSupplier<K, V1> {
 
                 if (needOuterJoin) {
                     // if record is out-of-order, then process it without holding it temporary
-                    if (timeTo < maxObservedStreamTime) {
+                    if (timeTo < maxObservedStreamTime.get()) {
                         context().forward(key, joiner.apply(value, null));
                     } else {
-                        thisOuterJoinBuffer.get().put(key, value, inputRecordTimestamp);
+                        // if max stream time in left-topic is higher than right-topic, then the right-topic
+                        // max stream time could have expired causing this put() to skip the record
+                        outerWindowStore.get().put(
+                            JoinSideAndKey.make(thisJoin, key),
+                            JoinedValues.make(thisJoin ? value : null, !thisJoin ? value : null),
+                            inputRecordTimestamp);
                     }
                 }
             }
 
             // it will also emit expiry records from the other window store if it uses
             // a join (i.e. left join only)
-            if (inputRecordTimestamp == maxObservedStreamTime) { // check if input record time move
+            if (inputRecordTimestamp == maxObservedStreamTime.get()) { // check if input record time move
                 maybeEmitOuterExpiryRecords();
             }
         }
 
         @SuppressWarnings("unchecked")
         private void maybeEmitOuterExpiryRecords() {
-            final long expiredWindowTime = maxObservedStreamTime - joinBeforeMs;
+            final long expiredWindowTime = maxObservedStreamTime.get() - joinBeforeMs;
 
             // todo: add grace period to calculations
 
             // condition to avoid processing records behind the window size
             if (expiredWindowTime >= 0) {
-                if (expiredWindowTime > thisOuterStartWindowTime.get()) {
-                    thisOuterJoinBuffer.ifPresent(buffer -> {
-                        try (final KeyValueIterator<Windowed<K>, V1> it = buffer.fetchAll(thisOuterStartWindowTime.get(), expiredWindowTime)) {
+                if (expiredWindowTime > outerStartWindowTime.get()) {
+                    outerWindowStore.ifPresent(buffer -> {
+                        try (final KeyValueIterator<Windowed<JoinSideAndKey<K>>, JoinedValues> it = buffer.fetchAll(outerStartWindowTime.get(), expiredWindowTime)) {
                             while (it.hasNext()) {
-                                final KeyValue<Windowed<K>, V1> e = it.next();
-                                context().forward(e.key.key(), joiner.apply(e.value, null));
+                                final KeyValue<Windowed<JoinSideAndKey<K>>, JoinedValues> e = it.next();
+                                if (thisJoin) {
+                                    if (e.key.key().isThisJoin()) {
+                                        context().forward(e.key.key().getKey(), joiner.apply((V1) e.value.getThisValue(), null));
+                                    } else {
+                                        context().forward(e.key.key().getKey(), joiner.apply(null, (V2) e.value.getOtherValue()));
+                                    }
+                                } else {
+                                    if (e.key.key().isThisJoin()) {
+                                        context().forward(e.key.key().getKey(), joiner.apply(null, (V2) e.value.getThisValue()));
+                                    } else {
+                                        context().forward(e.key.key().getKey(), joiner.apply((V1) e.value.getOtherValue(), null));
+                                    }
+                                }
+
+                                buffer.put(e.key.key(), null, e.key.window().start());
                             }
                         }
 
-                        thisOuterStartWindowTime.set(expiredWindowTime + 1);
-                    });
-                }
-
-                if (expiredWindowTime > otherOuterStartWindowTime.get()) {
-                    otherOuterJoinBuffer.ifPresent(buffer -> {
-                        try (final KeyValueIterator<Windowed<K>, V2> it = buffer.fetchAll(otherOuterStartWindowTime.get(), expiredWindowTime)) {
-                            while (it.hasNext()) {
-                                final KeyValue<Windowed<K>, V2> e = it.next();
-                                context().forward(e.key.key(), joiner.apply(null, e.value));
-                            }
-                        }
-
-                        otherOuterStartWindowTime.set(expiredWindowTime + 1);
+                        // is this affected by the other join?
+                        outerStartWindowTime.set(expiredWindowTime + 1);
                     });
                 }
             }
