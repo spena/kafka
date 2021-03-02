@@ -138,7 +138,11 @@ class ChangeLoggingWindowBytesStore
                     final byte[] value,
                     final long windowStartTimestamp) {
         wrapped().put(key, value, windowStartTimestamp);
-        log(WindowKeySchema.toStoreKeyBinary(key, windowStartTimestamp, maybeUpdateSeqnumForDups()), value);
+        log(serializeKey(key, windowStartTimestamp, maybeUpdateSeqnumForDups()), value);
+    }
+
+    Bytes serializeKey(final Bytes key, final long windowStartTimestamp, final int maybeUpdateSenumForDups) {
+        return WindowKeySchema.toStoreKeyBinary(key, windowStartTimestamp, maybeUpdateSenumForDups);
     }
 
     void log(final Bytes key,

@@ -28,6 +28,7 @@ import org.apache.kafka.streams.state.internals.RocksDbKeyValueBytesStoreSupplie
 import org.apache.kafka.streams.state.internals.RocksDbSessionBytesStoreSupplier;
 import org.apache.kafka.streams.state.internals.RocksDbWindowBytesStoreSupplier;
 import org.apache.kafka.streams.state.internals.SessionStoreBuilder;
+import org.apache.kafka.streams.state.internals.TimeOrderedWindowStoreBuilder;
 import org.apache.kafka.streams.state.internals.TimestampedKeyValueStoreBuilder;
 import org.apache.kafka.streams.state.internals.TimestampedWindowStoreBuilder;
 import org.apache.kafka.streams.state.internals.WindowStoreBuilder;
@@ -37,6 +38,7 @@ import java.util.Objects;
 
 import static org.apache.kafka.streams.internals.ApiUtils.prepareMillisCheckFailMsgPrefix;
 import static org.apache.kafka.streams.internals.ApiUtils.validateMillisecondDuration;
+import static org.apache.kafka.streams.state.internals.RocksDbWindowBytesStoreSupplier.WindowStoreTypes;
 
 /**
  * Factory for creating state stores in Kafka Streams.
@@ -211,7 +213,7 @@ public final class Stores {
             windowSize,
             retainDuplicates,
             legacySegmentInterval,
-            false
+            WindowStoreTypes.DEFAULT_WINDOW_STORE
         );
     }
 
@@ -238,7 +240,7 @@ public final class Stores {
                                                                  final Duration retentionPeriod,
                                                                  final Duration windowSize,
                                                                  final boolean retainDuplicates) throws IllegalArgumentException {
-        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, false);
+        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, WindowStoreTypes.DEFAULT_WINDOW_STORE);
     }
 
     /**
@@ -265,14 +267,41 @@ public final class Stores {
                                                                             final Duration retentionPeriod,
                                                                             final Duration windowSize,
                                                                             final boolean retainDuplicates) throws IllegalArgumentException {
-        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, true);
+        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, WindowStoreTypes.TIMESTAMPED_WINDOW_STORE);
+    }
+
+    /**
+     * Create a persistent {@link WindowBytesStoreSupplier}.
+     * <p>
+     * This store supplier can be passed into a
+     * {@link #timeOrderedWindowStoreBuilder(WindowBytesStoreSupplier, Serde, Serde)}.
+     * If you want to create a {@link WindowStore} you should use
+     * {@link #persistentWindowStore(String, Duration, Duration, boolean)} to create a store supplier instead.
+     *
+     * @param name                  name of the store (cannot be {@code null})
+     * @param retentionPeriod       length of time to retain data in the store (cannot be negative)
+     *                              (note that the retention period must be at least long enough to contain the
+     *                              windowed data's entire life cycle, from window-start through window-end,
+     *                              and for the entire grace period)
+     * @param windowSize            size of the windows (cannot be negative)
+     * @param retainDuplicates      whether or not to retain duplicates. Turning this on will automatically disable
+     *                              caching and means that null values will be ignored.
+     * @return an instance of {@link WindowBytesStoreSupplier}
+     * @throws IllegalArgumentException if {@code retentionPeriod} or {@code windowSize} can't be represented as {@code long milliseconds}
+     * @throws IllegalArgumentException if {@code retentionPeriod} is smaller than {@code windowSize}
+     */
+    public static WindowBytesStoreSupplier persistentTimeOrderedWindowStore(final String name,
+                                                                            final Duration retentionPeriod,
+                                                                            final Duration windowSize,
+                                                                            final boolean retainDuplicates) {
+        return persistentWindowStore(name, retentionPeriod, windowSize, retainDuplicates, WindowStoreTypes.TIME_ORDERED_WINDOW_STORE);
     }
 
     private static WindowBytesStoreSupplier persistentWindowStore(final String name,
                                                                   final Duration retentionPeriod,
                                                                   final Duration windowSize,
                                                                   final boolean retainDuplicates,
-                                                                  final boolean timestampedStore) {
+                                                                  final WindowStoreTypes windowStoreType) {
         Objects.requireNonNull(name, "name cannot be null");
         final String rpMsgPrefix = prepareMillisCheckFailMsgPrefix(retentionPeriod, "retentionPeriod");
         final long retentionMs = validateMillisecondDuration(retentionPeriod, rpMsgPrefix);
@@ -281,7 +310,7 @@ public final class Stores {
 
         final long defaultSegmentInterval = Math.max(retentionMs / 2, 60_000L);
 
-        return persistentWindowStore(name, retentionMs, windowSizeMs, retainDuplicates, defaultSegmentInterval, timestampedStore);
+        return persistentWindowStore(name, retentionMs, windowSizeMs, retainDuplicates, defaultSegmentInterval, windowStoreType);
     }
 
     private static WindowBytesStoreSupplier persistentWindowStore(final String name,
@@ -289,7 +318,7 @@ public final class Stores {
                                                                   final long windowSize,
                                                                   final boolean retainDuplicates,
                                                                   final long segmentInterval,
-                                                                  final boolean timestampedStore) {
+                                                                  final WindowStoreTypes windowStoreType) {
         Objects.requireNonNull(name, "name cannot be null");
         if (retentionPeriod < 0L) {
             throw new IllegalArgumentException("retentionPeriod cannot be negative");
@@ -312,7 +341,7 @@ public final class Stores {
             segmentInterval,
             windowSize,
             retainDuplicates,
-            timestampedStore);
+            windowStoreType);
     }
 
     /**
@@ -500,6 +529,13 @@ public final class Stores {
                                                                                                   final Serde<V> valueSerde) {
         Objects.requireNonNull(supplier, "supplier cannot be null");
         return new TimestampedWindowStoreBuilder<>(supplier, keySerde, valueSerde, Time.SYSTEM);
+    }
+
+    public static <K, V> StoreBuilder<WindowStore<K, V>> timeOrderedWindowStoreBuilder(final WindowBytesStoreSupplier supplier,
+                                                                                       final Serde<K> keySerde,
+                                                                                       final Serde<V> valueSerde) {
+        Objects.requireNonNull(supplier, "supplier cannot be null");
+        return new TimeOrderedWindowStoreBuilder<>(supplier, keySerde, valueSerde, Time.SYSTEM);
     }
 
     /**

@@ -154,7 +154,7 @@ public class TimeWindowedCogroupedKStreamImpl<K, V, W extends Window> extends Ab
                     Math.max(windows.maintainMs() / (windows.segments - 1), 60_000L),
                     windows.size(),
                     false,
-                    true);
+                    RocksDbWindowBytesStoreSupplier.WindowStoreTypes.DEFAULT_WINDOW_STORE);
             }
         }
         final StoreBuilder<TimestampedWindowStore<K, V>> builder = Stores

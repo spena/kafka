@@ -23,6 +23,8 @@ import org.apache.kafka.streams.state.internals.MemoryNavigableLRUCache;
 import org.apache.kafka.streams.state.internals.RocksDBSegmentedBytesStore;
 import org.apache.kafka.streams.state.internals.RocksDBSessionStore;
 import org.apache.kafka.streams.state.internals.RocksDBStore;
+import org.apache.kafka.streams.state.internals.RocksDBTimeOrderedSegmentedBytesStore;
+import org.apache.kafka.streams.state.internals.RocksDBTimeOrderedWindowStore;
 import org.apache.kafka.streams.state.internals.RocksDBTimestampedSegmentedBytesStore;
 import org.apache.kafka.streams.state.internals.RocksDBTimestampedStore;
 import org.apache.kafka.streams.state.internals.RocksDBWindowStore;
@@ -84,6 +86,12 @@ public class StoresTest {
     }
 
     @Test
+    public void shouldThrowIfIPersistentTimeOrderedWindowStoreStoreNameIsNull() {
+        final Exception e = assertThrows(NullPointerException.class, () -> Stores.persistentTimeOrderedWindowStore(null, ZERO, ZERO, false));
+        assertEquals("name cannot be null", e.getMessage());
+    }
+
+    @Test
     public void shouldThrowIfIPersistentWindowStoreRetentionPeriodIsNegative() {
         final Exception e = assertThrows(IllegalArgumentException.class, () -> Stores.persistentWindowStore("anyName", ofMillis(-1L), ZERO, false));
         assertEquals("retentionPeriod cannot be negative", e.getMessage());
@@ -92,6 +100,12 @@ public class StoresTest {
     @Test
     public void shouldThrowIfIPersistentTimestampedWindowStoreRetentionPeriodIsNegative() {
         final Exception e = assertThrows(IllegalArgumentException.class, () -> Stores.persistentTimestampedWindowStore("anyName", ofMillis(-1L), ZERO, false));
+        assertEquals("retentionPeriod cannot be negative", e.getMessage());
+    }
+
+    @Test
+    public void shouldThrowIfIPersistentTimeOrderedWindowStoreRetentionPeriodIsNegative() {
+        final Exception e = assertThrows(IllegalArgumentException.class, () -> Stores.persistentTimeOrderedWindowStore("anyName", ofMillis(-1L), ZERO, false));
         assertEquals("retentionPeriod cannot be negative", e.getMessage());
     }
 
@@ -111,6 +125,12 @@ public class StoresTest {
     @Test
     public void shouldThrowIfIPersistentTimestampedWindowStoreIfWindowSizeIsNegative() {
         final Exception e = assertThrows(IllegalArgumentException.class, () -> Stores.persistentTimestampedWindowStore("anyName", ofMillis(0L), ofMillis(-1L), false));
+        assertEquals("windowSize cannot be negative", e.getMessage());
+    }
+
+    @Test
+    public void shouldThrowIfIPersistentTimeOrderedWindowStoreIfWindowSizeIsNegative() {
+        final Exception e = assertThrows(IllegalArgumentException.class, () -> Stores.persistentTimeOrderedWindowStore("anyName", ofMillis(0L), ofMillis(-1L), false));
         assertEquals("windowSize cannot be negative", e.getMessage());
     }
 
@@ -141,6 +161,12 @@ public class StoresTest {
     @Test
     public void shouldThrowIfSupplierIsNullForSessionStoreBuilder() {
         final Exception e = assertThrows(NullPointerException.class, () -> Stores.sessionStoreBuilder(null, Serdes.ByteArray(), Serdes.ByteArray()));
+        assertEquals("supplier cannot be null", e.getMessage());
+    }
+
+    @Test
+    public void shouldThrowIfSupplierIsNullForTimeOrderedWindowStoreBuilder() {
+        final Exception e = assertThrows(NullPointerException.class, () -> Stores.timeOrderedWindowStoreBuilder(null, Serdes.ByteArray(), Serdes.ByteArray()));
         assertEquals("supplier cannot be null", e.getMessage());
     }
 
@@ -180,6 +206,14 @@ public class StoresTest {
         final StateStore wrapped = ((WrappedStateStore) store).wrapped();
         assertThat(store, instanceOf(RocksDBWindowStore.class));
         assertThat(wrapped, instanceOf(RocksDBTimestampedSegmentedBytesStore.class));
+    }
+
+    @Test
+    public void shouldCreateRocksDbTimeOrderedWindowStore() {
+        final WindowStore store = Stores.persistentTimeOrderedWindowStore("store", ofMillis(1L), ofMillis(1L), false).get();
+        final StateStore wrapped = ((WrappedStateStore) store).wrapped();
+        assertThat(store, instanceOf(RocksDBTimeOrderedWindowStore.class));
+        assertThat(wrapped, instanceOf(RocksDBTimeOrderedSegmentedBytesStore.class));
     }
 
     @Test
@@ -273,6 +307,16 @@ public class StoresTest {
     public void shouldBuildSessionStore() {
         final SessionStore<String, String> store = Stores.sessionStoreBuilder(
             Stores.persistentSessionStore("name", ofMillis(10)),
+            Serdes.String(),
+            Serdes.String()
+        ).build();
+        assertThat(store, not(nullValue()));
+    }
+
+    @Test
+    public void shouldBuildTimeOrderedWindowStore() {
+        final WindowStore<String, String> store = Stores.timeOrderedWindowStoreBuilder(
+            Stores.persistentTimeOrderedWindowStore("store", ofMillis(3L), ofMillis(3L), true),
             Serdes.String(),
             Serdes.String()
         ).build();

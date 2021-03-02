@@ -254,7 +254,7 @@ public class TimeWindowedKStreamImpl<K, V, W extends Window> extends AbstractStr
                     Math.max(windows.maintainMs() / (windows.segments - 1), 60_000L),
                     windows.size(),
                     false,
-                    true);
+                    RocksDbWindowBytesStoreSupplier.WindowStoreTypes.TIMESTAMPED_WINDOW_STORE);
             }
         }
         final StoreBuilder<TimestampedWindowStore<K, VR>> builder = Stores.timestampedWindowStoreBuilder(
