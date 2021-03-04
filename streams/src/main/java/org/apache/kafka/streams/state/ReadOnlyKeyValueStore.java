@@ -58,6 +58,10 @@ public interface ReadOnlyKeyValueStore<K, V> {
      */
     KeyValueIterator<K, V> range(K from, K to);
 
+    default KeyValueIterator<K, V> range(K from, K to, boolean prefixScan) {
+        throw new UnsupportedOperationException();
+    }
+
     /**
      * Get a reverse iterator over a given range of keys. This iterator must be closed after use.
      * The returned iterator must be safe from {@link java.util.ConcurrentModificationException}s
@@ -71,6 +75,10 @@ public interface ReadOnlyKeyValueStore<K, V> {
      * @throws InvalidStateStoreException if the store is not initialized
      */
     default KeyValueIterator<K, V> reverseRange(K from, K to) {
+        throw new UnsupportedOperationException();
+    }
+
+    default KeyValueIterator<K, V> reverseRange(K from, K to, boolean prefixScan) {
         throw new UnsupportedOperationException();
     }
 

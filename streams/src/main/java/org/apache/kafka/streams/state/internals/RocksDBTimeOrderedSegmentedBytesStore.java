@@ -47,11 +47,35 @@ public class RocksDBTimeOrderedSegmentedBytesStore extends AbstractRocksDBSegmen
                                                     final long timeTo) {
         final List<KeyValueSegment> searchSpace = segments.segments(timeFrom, timeTo, true);
 
+        final Bytes binaryFrom = lowerTimeRange(timeFrom);
+        final Bytes binaryTo = upperTimeRange(timeTo);
+
         return new SegmentIterator<>(
             searchSpace.iterator(),
             keySchema.hasNextCondition(null, null, timeFrom, timeTo),
-            null,
-            null,
+            binaryFrom,
+            binaryTo,
+            true,
             true);
+    }
+
+    private Bytes upperTimeRange(final long timeTo) {
+        if (keySchema instanceof TimeOrderedKeySchema) {
+            return TimeOrderedKeySchema.upperTimeRange(timeTo);
+        }
+
+        // If keySchema is not a time-ordered schema, then return null so the SegmentIterator
+        // does not do a range query
+        return null;
+    }
+
+    private Bytes lowerTimeRange(final long timeFrom) {
+        if (keySchema instanceof TimeOrderedKeySchema) {
+            return TimeOrderedKeySchema.lowerTimeRange(timeFrom);
+        }
+
+        // If keySchema is not a time-ordered schema, then return null so the SegmentIterator
+        // does not do a range query
+        return null;
     }
 }

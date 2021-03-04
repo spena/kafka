@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
@@ -194,7 +195,8 @@ public class RocksDBTimestampedStore extends RocksDBStore implements Timestamped
         @Override
         public KeyValueIterator<Bytes, byte[]> range(final Bytes from,
                                                      final Bytes to,
-                                                     final boolean forward) {
+                                                     final boolean forward,
+                                                     final boolean prefixScan) {
             return new RocksDBDualCFRangeIterator(
                 name,
                 db.newIterator(newColumnFamily),
@@ -202,7 +204,8 @@ public class RocksDBTimestampedStore extends RocksDBStore implements Timestamped
                 from,
                 to,
                 forward,
-                true);
+                true,
+                prefixScan);
         }
 
         @Override
@@ -229,6 +232,7 @@ public class RocksDBTimestampedStore extends RocksDBStore implements Timestamped
                 prefix,
                 to,
                 true,
+                false,
                 false
             );
         }
@@ -399,16 +403,29 @@ public class RocksDBTimestampedStore extends RocksDBStore implements Timestamped
         private final boolean forward;
         private final boolean toInclusive;
 
+        // If prefixScan = true, then makeNext() will compare only prefixed bytes to avoid getting
+        // invalid comparisons, i.e.
+        //     (rawLastKey) 0000 == (prefixed rawKey) 0000
+        //        vs
+        //     (rawLastKey) 0000 < (rawKey) 00000001
+        //
+        // Also, we can trust on 'to' being incremented 1 for a prefix scan. If 'to' turns out to be
+        // the max. limit, then it cannot be incremented thus we'll have a comparison issue as below:
+        //   (rawLastKey) FFFF < (rawKey) FFFF0001
+        private final boolean prefixRange;
+
         RocksDBDualCFRangeIterator(final String storeName,
                                    final RocksIterator iterWithTimestamp,
                                    final RocksIterator iterNoTimestamp,
                                    final Bytes from,
                                    final Bytes to,
                                    final boolean forward,
-                                   final boolean toInclusive) {
+                                   final boolean toInclusive,
+                                   final boolean prefixRange) {
             super(storeName, iterWithTimestamp, iterNoTimestamp, forward);
             this.forward = forward;
             this.toInclusive = toInclusive;
+            this.prefixRange = prefixRange;
             if (forward) {
                 iterWithTimestamp.seek(from.get());
                 iterNoTimestamp.seek(from.get());
@@ -433,23 +450,38 @@ public class RocksDBTimestampedStore extends RocksDBStore implements Timestamped
             if (next == null) {
                 return allDone();
             } else {
-                if (forward) {
+                final byte[] rawKey = maybePrefixScan(next.key.get());
 
-                    if (comparator.compare(next.key.get(), rawLastKey) < 0) {
+                if (forward) {
+                    if (comparator.compare(rawKey, rawLastKey) < 0) {
                         return next;
-                    } else if (comparator.compare(next.key.get(), rawLastKey) == 0) {
+                    } else if (comparator.compare(rawKey, rawLastKey) == 0) {
                         return toInclusive ? next : allDone();
                     } else {
                         return allDone();
                     }
                 } else {
-                    if (comparator.compare(next.key.get(), rawLastKey) >= 0) {
+                    if (comparator.compare(rawKey, rawLastKey) >= 0) {
                         return next;
                     } else {
                         return allDone();
                     }
                 }
             }
+        }
+
+        private byte[] maybePrefixScan(final byte[] rawKey) {
+            if (prefixRange) {
+                if (rawKey.length > rawLastKey.length) {
+                    return Arrays.copyOfRange(rawKey, 0, rawLastKey.length);
+                }
+
+                // Do not add extra bytes to the rawKey if is less than rawLastKey.
+                // The compare(rawKey, rawLastKey) will return < 0 no matter if zero padding is added
+                // or not.
+            }
+
+            return rawKey;
         }
     }
 }

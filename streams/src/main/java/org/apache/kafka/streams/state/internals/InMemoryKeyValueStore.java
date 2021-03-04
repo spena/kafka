@@ -128,15 +128,15 @@ public class InMemoryKeyValueStore implements KeyValueStore<Bytes, byte[]> {
 
     @Override
     public synchronized KeyValueIterator<Bytes, byte[]> range(final Bytes from, final Bytes to) {
-        return range(from, to, true);
+        return range(from, to, true, false);
     }
 
     @Override
     public synchronized KeyValueIterator<Bytes, byte[]> reverseRange(final Bytes from, final Bytes to) {
-        return range(from, to, false);
+        return range(from, to, false, false);
     }
 
-    private KeyValueIterator<Bytes, byte[]> range(final Bytes from, final Bytes to, final boolean forward) {
+    private KeyValueIterator<Bytes, byte[]> range(final Bytes from, final Bytes to, final boolean forward, final boolean prefixScan) {
         if (from.compareTo(to) > 0) {
             LOG.warn("Returning empty iterator for fetch with invalid key range: from > to. " +
                 "This may be due to range arguments set in the wrong order, " +

@@ -352,18 +352,33 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
     @Override
     public synchronized KeyValueIterator<Bytes, byte[]> range(final Bytes from,
                                                               final Bytes to) {
-        return range(from, to, true);
+        return range(from, to, true, false);
+    }
+
+    @Override
+    public synchronized KeyValueIterator<Bytes, byte[]> range(final Bytes from,
+                                                              final Bytes to,
+                                                              final boolean prefixScan) {
+        return range(from, to, true, prefixScan);
     }
 
     @Override
     public synchronized KeyValueIterator<Bytes, byte[]> reverseRange(final Bytes from,
                                                                      final Bytes to) {
-        return range(from, to, false);
+        return range(from, to, false, false);
+    }
+
+    @Override
+    public synchronized KeyValueIterator<Bytes, byte[]> reverseRange(final Bytes from,
+                                                                     final Bytes to,
+                                                                     final boolean prefixScan) {
+        return range(from, to, false, prefixScan);
     }
 
     KeyValueIterator<Bytes, byte[]> range(final Bytes from,
                                           final Bytes to,
-                                          final boolean forward) {
+                                          final boolean forward,
+                                          final boolean prefixScan) {
         Objects.requireNonNull(from, "from cannot be null");
         Objects.requireNonNull(to, "to cannot be null");
 
@@ -377,7 +392,7 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
 
         validateStoreOpen();
 
-        final KeyValueIterator<Bytes, byte[]> rocksDBRangeIterator = dbAccessor.range(from, to, forward);
+        final KeyValueIterator<Bytes, byte[]> rocksDBRangeIterator = dbAccessor.range(from, to, forward, prefixScan);
         openIterators.add(rocksDBRangeIterator);
 
         return rocksDBRangeIterator;
@@ -522,7 +537,8 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
 
         KeyValueIterator<Bytes, byte[]> range(final Bytes from,
                                               final Bytes to,
-                                              final boolean forward);
+                                              final boolean forward,
+                                              final boolean prefixScan);
 
         KeyValueIterator<Bytes, byte[]> all(final boolean forward);
 
@@ -591,7 +607,8 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
         @Override
         public KeyValueIterator<Bytes, byte[]> range(final Bytes from,
                                                      final Bytes to,
-                                                     final boolean forward) {
+                                                     final boolean forward,
+                                                     final boolean prefixScan) {
             return new RocksDBRangeIterator(
                 name,
                 db.newIterator(columnFamily),
@@ -599,7 +616,8 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
                 from,
                 to,
                 forward,
-                true
+                true,
+                prefixScan
             );
         }
 
@@ -624,7 +642,8 @@ public class RocksDBStore implements KeyValueStore<Bytes, byte[]>, BatchWritingS
                 prefix,
                 to,
                 true,
-                false
+                false,
+                false // prefix scan is already done by incrementing 'to'
             );
         }
 

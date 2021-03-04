@@ -32,6 +32,7 @@ class SegmentIterator<S extends Segment> implements KeyValueIterator<Bytes, byte
     private final Bytes from;
     private final Bytes to;
     private final boolean forward;
+    private final boolean prefixScan;
     protected final Iterator<S> segments;
     protected final HasNextCondition hasNextCondition;
 
@@ -43,11 +44,21 @@ class SegmentIterator<S extends Segment> implements KeyValueIterator<Bytes, byte
                     final Bytes from,
                     final Bytes to,
                     final boolean forward) {
+        this(segments, hasNextCondition, from, to, forward, false);
+    }
+
+    SegmentIterator(final Iterator<S> segments,
+                    final HasNextCondition hasNextCondition,
+                    final Bytes from,
+                    final Bytes to,
+                    final boolean forward,
+                    final boolean prefixScan) {
         this.segments = segments;
         this.hasNextCondition = hasNextCondition;
         this.from = from;
         this.to = to;
         this.forward = forward;
+        this.prefixScan = prefixScan;
     }
 
     @Override
@@ -82,9 +93,9 @@ class SegmentIterator<S extends Segment> implements KeyValueIterator<Bytes, byte
                     }
                 } else {
                     if (forward) {
-                        currentIterator = currentSegment.range(from, to);
+                        currentIterator = currentSegment.range(from, to, prefixScan);
                     } else {
-                        currentIterator = currentSegment.reverseRange(from, to);
+                        currentIterator = currentSegment.reverseRange(from, to, prefixScan);
                     }
                 }
             } catch (final InvalidStateStoreException e) {
