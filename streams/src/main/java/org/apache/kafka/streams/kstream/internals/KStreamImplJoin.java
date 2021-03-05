@@ -17,6 +17,7 @@
 
 package org.apache.kafka.streams.kstream.internals;
 
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.streams.errors.StreamsException;
 import org.apache.kafka.streams.kstream.JoinWindows;
@@ -27,16 +28,22 @@ import org.apache.kafka.streams.kstream.internals.graph.ProcessorGraphNode;
 import org.apache.kafka.streams.kstream.internals.graph.ProcessorParameters;
 import org.apache.kafka.streams.kstream.internals.graph.StreamStreamJoinNode;
 import org.apache.kafka.streams.kstream.internals.graph.GraphNode;
+import org.apache.kafka.streams.state.KeyAndJoinSide;
 import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.Stores;
+import org.apache.kafka.streams.state.ValueAndJoinSide;
+import org.apache.kafka.streams.state.ValueAndJoinSideSerde;
 import org.apache.kafka.streams.state.WindowBytesStoreSupplier;
 import org.apache.kafka.streams.state.WindowStore;
+import org.apache.kafka.streams.state.internals.KeyAndJoinSideSerde;
 
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 class KStreamImplJoin {
 
@@ -118,20 +125,40 @@ class KStreamImplJoin {
         final ProcessorGraphNode<K1, V2> otherWindowedStreamsNode = new ProcessorGraphNode<>(otherWindowStreamProcessorName, otherWindowStreamProcessorParams);
         builder.addGraphNode(otherGraphNode, otherWindowedStreamsNode);
 
+        Optional<StoreBuilder<WindowStore<KeyAndJoinSide<K1>, ValueAndJoinSide<V1, V2>>>> outerJoinWindowStore = Optional.empty();
+        if (leftOuter || rightOuter) {
+            final String outerJoinSuffix = "-outer-shared-store";
+            final String outerJoinStoreGeneratedName = builder.newProcessorName(KStreamImpl.OUTERSHARED_NAME);
+            final String outerJoinStoreName = userProvidedBaseStoreName == null ? outerJoinStoreGeneratedName : userProvidedBaseStoreName + outerJoinSuffix;
+
+            outerJoinWindowStore = Optional.of(outerJoinWindowStoreBuilder(outerJoinStoreName, windows, streamJoinedInternal));
+        }
+
+        final AtomicLong outerMaxObservedTime = new AtomicLong(ConsumerRecord.NO_TIMESTAMP);
+        final AtomicLong outerStartWindowTime = new AtomicLong(0);
+
         final KStreamKStreamJoin<K1, R, V1, V2> joinThis = new KStreamKStreamJoin<>(
+            true,
             otherWindowStore.name(),
             windows.beforeMs,
             windows.afterMs,
             joiner,
-            leftOuter
+            leftOuter,
+            outerJoinWindowStore.map(StoreBuilder::name),
+            outerMaxObservedTime,
+            outerStartWindowTime
         );
 
         final KStreamKStreamJoin<K1, R, V2, V1> joinOther = new KStreamKStreamJoin<>(
+            false,
             thisWindowStore.name(),
             windows.afterMs,
             windows.beforeMs,
             AbstractStream.reverseJoiner(joiner),
-            rightOuter
+            rightOuter,
+            outerJoinWindowStore.map(StoreBuilder::name),
+            outerMaxObservedTime,
+            outerStartWindowTime
         );
 
         final PassThrough<K1, R> joinMerge = new PassThrough<>();
@@ -149,6 +176,7 @@ class KStreamImplJoin {
                    .withOtherWindowStoreBuilder(otherWindowStore)
                    .withThisWindowedStreamProcessorParameters(thisWindowStreamProcessorParams)
                    .withOtherWindowedStreamProcessorParameters(otherWindowStreamProcessorParams)
+                   .withOuterJoinWindowStoreBuilder(outerJoinWindowStore)
                    .withValueJoiner(joiner)
                    .withNodeName(joinMergeName);
 
@@ -204,6 +232,29 @@ class KStreamImplJoin {
         );
         if (loggingEnabled) {
             builder.withLoggingEnabled(logConfig);
+        } else {
+            builder.withLoggingDisabled();
+        }
+
+        return builder;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <K, V1, V2> StoreBuilder<WindowStore<KeyAndJoinSide<K>, ValueAndJoinSide<V1, V2>>> outerJoinWindowStoreBuilder(final String storeName,
+                                                                                                                                  final JoinWindows windows,
+                                                                                                                                  final StreamJoinedInternal<K, V1, V2> streamJoinedInternal) {
+        final StoreBuilder<WindowStore<KeyAndJoinSide<K>, ValueAndJoinSide<V1, V2>>> builder = Stores.timeOrderedWindowStoreBuilder(
+            Stores.persistentTimeOrderedWindowStore(
+                storeName + "-store",
+                Duration.ofMillis(windows.size() + windows.gracePeriodMs()),
+                Duration.ofMillis(windows.size()),
+                false
+            ),
+            new KeyAndJoinSideSerde<>(streamJoinedInternal.keySerde()),
+            new ValueAndJoinSideSerde(streamJoinedInternal.valueSerde(), streamJoinedInternal.otherValueSerde())
+        );
+        if (streamJoinedInternal.loggingEnabled()) {
+            builder.withLoggingEnabled(streamJoinedInternal.logConfig());
         } else {
             builder.withLoggingDisabled();
         }
